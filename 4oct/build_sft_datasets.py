@@ -33,7 +33,7 @@ SFT_TRAIN_JSONL_PATH = Path("out/ecom_sft_advanced.train.jsonl")
 
 # Optional: Create a smaller validation set to monitor training progress.
 SFT_VAL_JSONL_PATH = Path("out/ecom_sft_advanced.val.jsonl")
-VAL_SET_SIZE = 500  # Number of products to use for the validation set
+VAL_SET_SIZE = 200  # Number of products to use for the validation set
 
 # Controls how many conversational examples are generated per product.
 # A higher number increases dataset size and variety but takes longer.
@@ -250,17 +250,19 @@ def main():
     random.shuffle(all_products)
 
     # Split into training and validation sets
+    if len(all_products) <= VAL_SET_SIZE:
+        raise ValueError("Not enough products to create a validation set. Please reduce VAL_SET_SIZE.")
     val_products = all_products[:VAL_SET_SIZE]
     train_products = all_products[VAL_SET_SIZE:]
     
     print(f"Allocating {len(train_products):,} products for training and {len(val_products):,} for validation.")
 
+    # --- TRAINING SET GENERATION (This part was already correct) ---
     sft_record_count = 0
     with SFT_TRAIN_JSONL_PATH.open("w", encoding="utf-8") as f_train:
         for product in train_products:
             generator = SFT_Generator(product)
             generated_examples = 0
-            # Try to generate the desired number of examples, sampling from available skills
             available_gens = generator.generators.copy()
             random.shuffle(available_gens)
 
@@ -275,12 +277,31 @@ def main():
 
     print(f"Successfully wrote {sft_record_count:,} training examples to: {SFT_TRAIN_JSONL_PATH}")
 
-    # Generate validation set
+    # =================================================================
+    # --- VALIDATION SET GENERATION (Corrected and made resilient) ---
+    # =================================================================
     val_record_count = 0
     with SFT_VAL_JSONL_PATH.open("w", encoding="utf-8") as f_val:
         for product in val_products:
             generator = SFT_Generator(product)
-            example = generator.gen_summary() # Use a consistent type for validation
+            example = None
+            
+            # --- THE FIX: Try multiple generator types until one succeeds ---
+            # We create a list of preferred, simple generator functions to try in order.
+            # This ensures we get a validation example if ANY of this data is present.
+            preferred_gens = [
+                generator.gen_price_and_rating,
+                generator.gen_summary,
+                generator.gen_brand_and_category,
+                generator.gen_delivery_info,
+            ]
+            
+            for gen_func in preferred_gens:
+                example = gen_func()
+                if example:
+                    # As soon as we get one valid example, we stop trying for this product.
+                    break
+            
             if example:
                 f_val.write(json.dumps(example, ensure_ascii=False) + "\n")
                 val_record_count += 1
